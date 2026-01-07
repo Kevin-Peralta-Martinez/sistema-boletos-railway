@@ -1,0 +1,226 @@
+<!-- app_movil/scanner.html -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Escáner Móvil</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #2c3e50; }
+        .container { min-height: 100vh; padding: 20px; color: white; }
+        .header { text-align: center; padding: 30px 0; }
+        h1 { font-size: 24px; margin-bottom: 10px; }
+        .scanner-box { background: black; width: 100%; height: 300px; border-radius: 20px; margin: 20px 0; overflow: hidden; position: relative; }
+        #scanner-video { width: 100%; height: 100%; object-fit: cover; }
+        .scanner-frame { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 250px; height: 250px; border: 3px solid #00ff00; border-radius: 15px; box-shadow: 0 0 0 1000px rgba(0,0,0,0.5); }
+        .manual-input { background: white; padding: 20px; border-radius: 15px; margin: 20px 0; }
+        input { width: 100%; padding: 15px; border: 2px solid #ddd; border-radius: 10px; font-size: 16px; margin-bottom: 10px; }
+        .btn { width: 100%; padding: 18px; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; margin: 10px 0; }
+        .btn-primary { background: #3498db; color: white; }
+        .btn-success { background: #2ecc71; color: white; }
+        .btn-danger { background: #e74c3c; color: white; }
+        .result { background: white; color: #333; padding: 25px; border-radius: 15px; margin-top: 20px; display: none; }
+        .result.show { display: block; animation: slideUp 0.3s; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .result-icon { font-size: 60px; text-align: center; margin-bottom: 20px; }
+        .status-bar { background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center; margin-top: 20px; font-size: 14px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📱 ESCÁNER DE BOLETOS</h1>
+            <p>Apunte la cámara al código QR</p>
+        </div>
+        
+        <div class="scanner-box">
+            <video id="scanner-video"></video>
+            <div class="scanner-frame"></div>
+        </div>
+        
+        <button class="btn btn-primary" onclick="toggleCamera()" id="cameraBtn">
+            ▶ INICIAR CÁMARA
+        </button>
+        
+        <div class="manual-input">
+            <input type="text" id="codigoInput" placeholder="Ingresar código manualmente...">
+            <button class="btn btn-success" onclick="validarManual()">
+                ✅ VALIDAR
+            </button>
+        </div>
+        
+        <div class="result" id="resultado">
+            <div class="result-icon" id="resultIcon">⏳</div>
+            <h2 id="resultTitle" style="text-align: center;"></h2>
+            <p id="resultMessage" style="text-align: center;"></p>
+            <button class="btn btn-primary" onclick="resetScanner()" style="margin-top: 20px;">
+                🔄 ESCANEAR OTRO
+            </button>
+        </div>
+        
+        <div class="status-bar">
+            <div>API: <span id="apiStatus">Conectando...</span></div>
+            <div>Escaneos: <span id="scanCount">0</span></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let videoStream = null;
+        let scanning = false;
+        let scanCount = 0;
+        
+        // Verificar API
+        async function checkAPI() {
+            try {
+                await fetch(API_URL);
+                document.getElementById('apiStatus').textContent = '✅ Conectado';
+                document.getElementById('apiStatus').style.color = '#2ecc71';
+            } catch {
+                document.getElementById('apiStatus').textContent = '❌ Desconectado';
+                document.getElementById('apiStatus').style.color = '#e74c3c';
+            }
+        }
+        
+        checkAPI();
+        
+        // Alternar cámara
+        async function toggleCamera() {
+            if (!videoStream) {
+                try {
+                    videoStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' }
+                    });
+                    const video = document.getElementById('scanner-video');
+                    video.srcObject = videoStream;
+                    video.play();
+                    
+                    document.getElementById('cameraBtn').textContent = '⏸ DETENER';
+                    document.getElementById('cameraBtn').className = 'btn btn-danger';
+                    
+                    startScanning();
+                    
+                } catch (error) {
+                    alert('Error al acceder a la cámara: ' + error.message);
+                }
+            } else {
+                stopCamera();
+            }
+        }
+        
+        function stopCamera() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+                document.getElementById('scanner-video').srcObject = null;
+                document.getElementById('cameraBtn').textContent = '▶ INICIAR CÁMARA';
+                document.getElementById('cameraBtn').className = 'btn btn-primary';
+                scanning = false;
+            }
+        }
+        
+        // Iniciar escaneo
+        function startScanning() {
+            scanning = true;
+            const video = document.getElementById('scanner-video');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            function scan() {
+                if (!scanning || !videoStream) return;
+                
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height);
+                    
+                    if (code) {
+                        stopCamera();
+                        validarCodigo(code.data);
+                    }
+                }
+                
+                requestAnimationFrame(scan);
+            }
+            
+            scan();
+        }
+        
+        // Validar código
+        async function validarCodigo(codigo) {
+            try {
+                const response = await fetch(`${API_URL}/validar/${codigo}?usuario=movil&dispositivo=mobile`);
+                const data = await response.json();
+                
+                mostrarResultado(data, codigo);
+                
+                scanCount++;
+                document.getElementById('scanCount').textContent = scanCount;
+                
+            } catch (error) {
+                mostrarResultado({
+                    estado: 'error',
+                    mensaje: 'Error de conexión'
+                }, codigo);
+            }
+        }
+        
+        // Validar manualmente
+        function validarManual() {
+            const codigo = document.getElementById('codigoInput').value.trim();
+            if (codigo) {
+                validarCodigo(codigo);
+                document.getElementById('codigoInput').value = '';
+            }
+        }
+        
+        // Mostrar resultado
+        function mostrarResultado(data, codigo) {
+            const resultado = document.getElementById('resultado');
+            const icono = document.getElementById('resultIcon');
+            const titulo = document.getElementById('resultTitle');
+            const mensaje = document.getElementById('resultMessage');
+            
+            resultado.classList.add('show');
+            
+            if (data.estado === 'valido') {
+                icono.textContent = '✅';
+                icono.style.color = '#2ecc71';
+                titulo.textContent = 'BOLETO VÁLIDO';
+                titulo.style.color = '#2ecc71';
+                mensaje.textContent = data.mensaje;
+                
+                // Vibrar si es móvil
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                
+            } else {
+                icono.textContent = '❌';
+                icono.style.color = '#e74c3c';
+                titulo.textContent = 'BOLETO INVÁLIDO';
+                titulo.style.color = '#e74c3c';
+                mensaje.textContent = data.mensaje;
+                
+                if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+            }
+            
+            // Desplazar hacia el resultado
+            resultado.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // Reiniciar escáner
+        function resetScanner() {
+            document.getElementById('resultado').classList.remove('show');
+            toggleCamera();
+        }
+        
+        // Permitir Enter
+        document.getElementById('codigoInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') validarManual();
+        });
+    </script>
+</body>
+</html>
